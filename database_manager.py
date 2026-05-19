@@ -122,7 +122,6 @@ def render_dashboard():
             event_counts = target_events['event_type'].value_counts().reset_index()
             event_counts.columns = ['방해요인', '횟수']
             
-            # 1. 총합 막대 그래프 (빨간색)
             chart_total = alt.Chart(event_counts).mark_bar(color='#FF4B4B').encode(
                 x=alt.X('방해요인', axis=alt.Axis(labelAngle=0)), 
                 y='횟수', 
@@ -130,7 +129,6 @@ def render_dashboard():
             ).properties(height=250)
             st.altair_chart(chart_total, use_container_width=True)
             
-            # 2. 일평균 막대 그래프 추가 (연도별/월별 조회 시에만 표시)
             if view_type in ["연도별", "월별"]:
                 st.subheader("주요 방해 요인 (일평균 발생 횟수)")
                 event_counts['일평균'] = (event_counts['횟수'] / days_count).round(2)
