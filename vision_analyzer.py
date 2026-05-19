@@ -21,7 +21,7 @@ class FocusAnalyzer:
         self.cached_classes = []
         self.cached_plot = None
 
-    def analyze_frame(self, frame, allowed_device="없음", head_down_thresh=0.70, head_up_thresh=0.45, yaw_thresh=0.40, hand_threshold=0.02, yaw_normal=0.5, draw_debug=False):
+    def analyze_frame(self, frame, allowed_device="없음", head_down_thresh=0.70, head_up_thresh=0.45, yaw_thresh=0.40, hand_threshold=0.015, yaw_normal=0.5, draw_debug=False):
         self.frame_count += 1
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
@@ -82,7 +82,10 @@ class FocusAnalyzer:
         is_writing = False
 
         if not face_results.multi_face_landmarks:
-            result["status"] = "자리비움"
+            if 'person' in detected_classes:
+                result["status"] = "졸음" 
+            else:
+                result["status"] = "자리비움"
             return result
 
         if face_results.multi_face_landmarks:
