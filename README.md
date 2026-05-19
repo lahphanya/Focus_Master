@@ -1,2 +1,131 @@
-# Focus_Analyzer
-Real-time study focus monitoring and distraction analysis system with using YOLOv8 and MediaPipe.
+# Focus_Master
+
+컴퓨터 비전 기술과 딥러닝 기반의 객체/자세 인식 알고리즘을 결합하여 사용자의 학습 집중도를 실시간으로 모니터링하고 분석하는 웹 애플리케이션입니다.
+
+터미널에서 `streamlit run app.py` 명령어를 실행하면 로컬 웹 환경에서 즉각적인 모니터링 시스템과 통계 대시보드를 사용할 수 있습니다. 단순히 자세를 판별하는 것을 넘어, 내장된 Pomodoro 스케줄러와 연동하여 사용자의 상태(집중, 필기, 졸음, 전자기기 사용, 자리비움 등)를 초 단위로 기록하고 시각화된 통계 자료를 제공합니다.
+
+---
+
+## 개발 환경
+
+* OS : Windows 11
+* Python : 3.11.9
+* 라이브러리 : Streamlit, OpenCV, MediaPipe, Ultralytics(YOLOv8), SQLite, Pandas, Altair
+* 하드웨어 : 기본 웹캠(Webcam) 환경
+
+---
+
+## 주요 알고리즘 및 구현 과정
+
+### 1. 주요 모델 알고리즘
+
+웹캠에서 입력되는 단일 프레임에서 얼굴의 방향, 손의 움직임, 주변 객체를 동시에 분석하기 위해 두 가지 모델을 병렬로 구성하였습니다.
+
+* **MediaPipe Face Mesh & Hands (자세 및 행동 인식)**
+  * 얼굴의 468개 랜드마크를 추출하여, 이마(10번), 코(1번), 턱(152번) 랜드마크의 Y좌표를 이용해 고개의 상하 각도(Pitch)를 절대 수치로 계산합니다.
+  * 양쪽 귀(234번, 454번)와 코의 X좌표 비율을 통해 고개의 좌우 회전(Yaw) 각도를 수치화합니다.
+  * 양손의 검지손가락 끝(8번) 좌표의 프레임 간 이동 거리를 추적하여 미세한 '손 움직임' 수치를 도출합니다.
+
+
+* **YOLOv8 Nano (전자기기 반입 탐지)**
+  * 화면 내에 스마트폰(cell phone), 노트북, 태블릿(tv 포함) 등의 방해 요소가 존재하는지 실시간으로 탐지합니다.
+  * 검은색 펜을 스마트폰으로 오인식 문제와 핸드폰을 감지했음에도 임계점에 넘지않아 인식하지 않는 문제를 해결하기 위해, 특정 클래스에 한하여 Confidence 임계값을 0.5로 상향 조정하였습니다.
+
+
+
+```python
+#  vision_analyzer.py
+
+# 객체 탐지 confidence 제어 예시
+for box in r.boxes:
+    cls_name = self.yolo_model.names[int(box.cls[0])]
+    conf = float(box.conf[0])
+    
+    # 스마트폰 오인식 방지를 위한 하드 필터링
+    if cls_name == 'cell phone' and conf < 0.5:
+        continue
+    detected_classes.append(cls_name)
+
+```
+
+### 2. 오탐지 방지 처리
+
+상대적인 각도 변화가 아닌 절대적인 한계선을 부여하여 웹캠의 물리적 한계(투시 오류 등)를 극복하고, 교차 검증을 통해 오탐지를 방지합니다.
+
+* **상하 절대 수치 기반 판별:** 고개 숙임(졸음)은 0.70 이상, 고개 들림(누움)은 0.45 이하로 기준선을 명확히 분리하여 판별의 직관성을 높였습니다.
+* **필기 예외 처리:** 고개를 푹 숙여 임계값(0.70)을 초과하더라도, MediaPipe Hands에서 추출한 손 움직임 수치가 임계값을 넘는다면 이를 '졸음'이 아닌 '필기중'으로 우선 처리하여 오알람을 방지합니다.
+* **자리비움 감지:** 화면에서 Face Landmarks가 검출되지 않는 프레임이 발생하면 즉시 '자리비움' 상태로 전환합니다.
+
+```python
+# visual_analyzer.py
+
+if not face_results.multi_face_landmarks:
+    result["status"] = "자리비움"
+elif is_looking_away:
+    result["status"] = "고개 돌림"
+elif is_leaning_back:
+    result["status"] = "누움/뒤척임"
+elif is_face_down:
+    if is_writing: 
+        result["status"] = "필기중"
+    else: 
+        result["status"] = "졸음"
+else:
+    result["status"] = "집중중"
+
+```
+
+### 3. 실시간 캠 렌더링 최적화
+
+초기 버전에서 발생한 Streamlit 웹소켓 다운 현상(화면 증발) 및 CPU 과부하 문제를 해결하기 위해 시스템 아키텍처를 최적화했습니다.
+
+* **UI 렌더링 스로틀링 (Throttling):** 영상(카메라)은 30FPS로 부드럽게 송출하되, Streamlit의 무거운 UI 요소(텍스트, 그래프, 표)는 `time.time()`을 활용해 0.2초 간격으로만 업데이트되도록 분리했습니다.
+* **프레임 스킵 (Frame Skip):** 연산량이 많은 YOLO 모델은 매 프레임마다 실행하지 않고, 3프레임당 1회씩만 실행한 뒤 나머지 2프레임은 이전 결과를 캐싱하여 사용하는 방식으로 CPU 점유율을 대폭 낮췄습니다.
+* **자원 캐싱 (`@st.cache_resource`):** 최초의 로딩을 제외한 다른 상태 변화로 인해 Streamlit이 재시작될 때마다 카메라가 꺼지거나 AI 모델 재로딩의 지연 현상을 막기 위해, 하드웨어 연동부와 가중치를 메모리에 강제 고정하여 지연 시간을 단축했습니다.
+
+```python
+# app.py
+
+last_ui_update = 0.0
+UI_UPDATE_INTERVAL = 0.2
+
+while True:
+    ret, frame = cap.read()
+    current_time = time.time()
+    
+    # 영상은 매 프레임 즉각 송출
+    frame_placeholder.image(display_frame)
+    
+    # UI 지표들은 0.2초에 한 번만 새로고침하여 브라우저 과부하 방지
+    if current_time - last_ui_update > UI_UPDATE_INTERVAL:
+        m1_placeholder.metric("현재 상태", status_text)
+        realtime_table_placeholder.dataframe(df_grouped)
+        last_ui_update = current_time
+
+```
+
+### 4. 동적 영점 조절 및 상태 유지 
+
+* **Overlay Calibration:** 별도의 카메라 창을 띄우지 않고, 메인 루프 내에서 카메라를 점유한 채로 5초간 카운트다운 오버레이를 띄워 사용자의 정면 기준(Yaw)과 손 떨림 임계값을 수집합니다.
+* **3초 쿨다운 시스템:** 자세가 순간적으로 흐트러져 알람이 울린 경우, 상태를 3초간 잠금(Lock) 처리하여 알람이 짧게 끊기며 발생하는 Flickering 현상을 제어합니다.
+* **데이터베이스 연동:** SQLite를 사용하여 학습 세션 단위로 시작/종료 시간, 순공부시간을 기록하며, 5분 단위 버킷(Bucket)으로 딴짓 발생 사유와 빈도를 `distraction_events` 테이블에 자동 적재합니다.
+
+---
+
+## 실제 적용 및 결과
+
+### 0. 실제 UI 모습
+
+> 좌측 사이드바를 통해 공부시간, 쉬는시간, 텀을 설정하게 되면 상단의 바 형태로 남은 텀과 시간등이 표시됩니다. 이때 시간이 경과될수록 파란색 바를 통해 얼마나 진행되었는지 알수 있습니다.
+
+### 1. 실시간 모니터링 및 동적 캘리브레이션
+
+> 프로그램 실행 시 5초간의 캘리브레이션을 통해 사용자 고유의 영점을 설정합니다. 우측 UI에는 상하/좌우 절대 각도와 스케줄 타이머가 0.2초 주기로 부드럽게 갱신됩니다. 좌측 사이드바를 통해 주변 환경에 맞춰 센서 민감도를 실시간으로 조정할 수 있습니다.
+
+### 2. 예외 처리 및 방해 요소 감지
+
+> 고개를 기준치(0.75) 이상으로 푹 숙인 상태여도, 손의 이동 수치(0.01)가 감지되면 '필기중'으로 정상 판별하여 알람을 울리지 않습니다. 하지만 5초동안 이동 수치를 넘지않게되면 졸음으로 판단합니다. 반면, 스마트폰을 화면에 노출하거나 고개를 화면 밖으로 돌리면 화면 전체에 붉은 오버레이와 함께 즉각적인 사이렌 경고가 발생합니다.
+
+### 3. 통계 및 분석 대시보드
+
+> 학습이 종료된 후 '통계 및 분석' 탭으로 이동하면, 데이터베이스에 누적된 기록을 바탕으로 Altair 라이브러리를 활용한 시각화 차트를 제공합니다. 시간대별 집중력 흐름과 방해 요소(졸음, 고개 돌림, 전자기기 등)의 비율을 객관적인 지표로 확인하여 학습 습관을 개선할 수 있습니다. (해당 사진들은 첨부된 focus_master.db 파일입니다.)
