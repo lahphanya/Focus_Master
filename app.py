@@ -25,15 +25,15 @@ stop_audio_script = '<script>var audio = parent.document.getElementById("siren")
 def init_session_state():
     defaults = {
         'is_running': False, 'current_mode': "대기중", 'pure_study_time': 0.0,
-        'head_down_thresh': 0.75, 'head_up_thresh': 0.45, 'yaw_thresh': 0.40, 'hand_threshold': 0.008, 
+        'head_down_thresh': 0.75, 'head_up_thresh': 0.45, 'yaw_thresh': 0.40, 'hand_threshold': 0.015, 
         'allowed_device': "없음", 'current_session_id': None, 'prev_status': "집중중", 
         'last_frame_time': None, 'study_min': 50, 'break_min': 10, 'total_cycles': 3,
         'current_cycle': 1, 'phase_start_time': None, 'is_meal_time': False,
         'realtime_events': [], 'yaw_normal': 0.5, 
         'status_lock_until': 0.0, 'locked_status': "집중중",
         'is_calibrating': False, 'cal_start_time': 0.0, 'cal_yaw_data': [], 'cal_hand_data': [],
-        # 💡 연속 졸음 감지를 위한 전용 타이머 추가!
-        'sleep_start_time': 0.0 
+        'sleep_start_time': 0.0,
+        'last_sleep_frame_time': 0.0 
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -276,16 +276,26 @@ if menu == "실시간 모니터링":
                 yaw_normal=st.session_state.yaw_normal, draw_debug=show_debug_info 
             )
             
-            if result['status'] == "졸음":
+            raw_status = result['status']
+            
+            if raw_status == "졸음":
+                st.session_state.last_sleep_frame_time = current_time
+                
                 if st.session_state.sleep_start_time == 0.0:
                     st.session_state.sleep_start_time = current_time
                     result['status'] = "필기중" 
                 else:
                     if current_time - st.session_state.sleep_start_time < 5.0:
-                        result['status'] = "필기중"
-            else:
-                st.session_state.sleep_start_time = 0.0
+                        result['status'] = "필기중" 
             
+            elif raw_status == "필기중":
+                if current_time - st.session_state.last_sleep_frame_time > 1.5:
+                    st.session_state.sleep_start_time = 0.0 
+            else:
+  
+                st.session_state.sleep_start_time = 0.0
+                st.session_state.last_sleep_frame_time = 0.0
+
             if current_time < st.session_state.status_lock_until:
                 result['status'] = st.session_state.locked_status
             else:
